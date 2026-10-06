@@ -1,7 +1,12 @@
 import { addDoc, listDocs } from '@/lib/rag';
 
 export async function GET() {
-  return Response.json(await listDocs());
+  try {
+    return Response.json(await listDocs());
+  } catch (err) {
+    console.error('Error listing docs:', err);
+    return Response.json([]);
+  }
 }
 
 export async function POST(req: Request) {

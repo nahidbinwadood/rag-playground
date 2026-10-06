@@ -4,7 +4,7 @@ import { search, type Hit } from '@/lib/rag';
 // Any OpenAI-compatible provider works: OpenRouter (default), Google Gemini, Groq, local Ollama...
 // Switch by setting LLM_BASE_URL + LLM_API_KEY + CHAT_MODELS in .env.local.
 const BASE_URL = process.env.LLM_BASE_URL ?? 'https://openrouter.ai/api/v1';
-const API_KEY = process.env.LLM_API_KEY ?? process.env.OPENROUTER_API_KEY;
+const API_KEY = process.env.LLM_API_KEY ?? process.env.OPENROUTER_API_KEY ?? process.env.GEMINI_API_KEY;
 const IS_OPENROUTER = BASE_URL.includes('openrouter.ai');
 
 // Tried in order: free models are often rate-limited, OpenRouter falls through to the next one.
@@ -73,68 +73,85 @@ async function retrieve(messages: Msg[], topK: number): Promise<Hit[]> {
 
 // Response is NDJSON: one JSON object per line, so the UI can show sources first, then stream text.
 export async function POST(req: Request) {
-  if (!API_KEY) {
+  try {
+    if (!API_KEY) {
+      return Response.json(
+        { error: 'Set LLM_API_KEY (or OPENROUTER_API_KEY / GEMINI_API_KEY) in your environment variables' },
+        { status: 500 },
+      );
+    }
+
+    // OpenRouter speaks the OpenAI API format, so the official SDK works with a different baseURL.
+    // The SDK default is a 10-minute timeout with 2 retries: far too long for a chat. Free models sometimes hang,
+    // so give up after 30 s (one retry) and let the user press "Try again".
+    const client = new OpenAI({
+      baseURL: BASE_URL,
+      apiKey: API_KEY,
+      timeout: 30_000,
+      maxRetries: 1,
+    });
+
+    const {
+      messages,
+      useRag = true,
+      topK = 4,
+    } = (await req.json()) as {
+      messages: Msg[];
+      useRag?: boolean;
+      topK?: number;
+    };
+
+    // ponytail: follow-ups are handled by searching with the last two questions together.
+    // Upgrade: ask the LLM to rewrite the follow-up into a standalone question before searching.
+    let hits: Hit[] | null = null;
+    if (useRag) {
+      try {
+        hits = await retrieve(messages, topK);
+      } catch (err) {
+        console.error('Retrieval error:', err);
+        hits = [];
+      }
+    }
+
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      async start(controller) {
+        const send = (obj: unknown) => controller.enqueue(encoder.encode(JSON.stringify(obj) + '\n'));
+        send({ type: 'sources', sources: hits ?? [] });
+        try {
+          const completion = await client.chat.completions.create({
+            model: MODELS[0],
+            // OpenRouter-only fields, not in the OpenAI types, hence the spread: fallback list,
+            // no hidden "thinking" before the first word, and route to the fastest provider.
+            // ponytail: speed over depth; drop `reasoning` if answers get sloppy.
+            ...(IS_OPENROUTER
+              ? ({ models: MODELS, reasoning: { enabled: false }, provider: { sort: 'latency' } } as object)
+              : {}),
+            stream: true,
+            messages: [{ role: 'system', content: systemPrompt(hits) }, ...messages],
+          });
+          let announced = false;
+          for await (const part of completion) {
+            if (!announced && part.model) {
+              send({ type: 'model', model: part.model });
+              announced = true;
+            }
+            const delta = part.choices[0]?.delta?.content;
+            if (delta) send({ type: 'text', delta });
+          }
+        } catch (e) {
+          send({ type: 'error', message: (e as Error).message });
+        }
+        controller.close();
+      },
+    });
+
+    return new Response(stream, { headers: { 'Content-Type': 'application/x-ndjson' } });
+  } catch (err) {
+    console.error('Chat endpoint error:', err);
     return Response.json(
-      { error: 'Set OPENROUTER_API_KEY (or LLM_API_KEY) in .env.local and restart pnpm dev' },
+      { error: (err as Error).message || 'Server error' },
       { status: 500 },
     );
   }
-
-  // OpenRouter speaks the OpenAI API format, so the official SDK works with a different baseURL.
-  // The SDK default is a 10-minute timeout with 2 retries: far too long for a chat. Free models sometimes hang,
-  // so give up after 30 s (one retry) and let the user press "Try again".
-  const client = new OpenAI({
-    baseURL: BASE_URL,
-    apiKey: API_KEY,
-    timeout: 30_000,
-    maxRetries: 1,
-  });
-
-  const {
-    messages,
-    useRag = true,
-    topK = 4,
-  } = (await req.json()) as {
-    messages: Msg[];
-    useRag?: boolean;
-    topK?: number;
-  };
-  // ponytail: follow-ups are handled by searching with the last two questions together.
-  // Upgrade: ask the LLM to rewrite the follow-up into a standalone question before searching.
-  const hits = useRag ? await retrieve(messages, topK) : null;
-
-  const encoder = new TextEncoder();
-  const stream = new ReadableStream({
-    async start(controller) {
-      const send = (obj: unknown) => controller.enqueue(encoder.encode(JSON.stringify(obj) + '\n'));
-      send({ type: 'sources', sources: hits ?? [] });
-      try {
-        const completion = await client.chat.completions.create({
-          model: MODELS[0],
-          // OpenRouter-only fields, not in the OpenAI types, hence the spread: fallback list,
-          // no hidden "thinking" before the first word, and route to the fastest provider.
-          // ponytail: speed over depth; drop `reasoning` if answers get sloppy.
-          ...(IS_OPENROUTER
-            ? ({ models: MODELS, reasoning: { enabled: false }, provider: { sort: 'latency' } } as object)
-            : {}),
-          stream: true,
-          messages: [{ role: 'system', content: systemPrompt(hits) }, ...messages],
-        });
-        let announced = false;
-        for await (const part of completion) {
-          if (!announced && part.model) {
-            send({ type: 'model', model: part.model });
-            announced = true;
-          }
-          const delta = part.choices[0]?.delta?.content;
-          if (delta) send({ type: 'text', delta });
-        }
-      } catch (e) {
-        send({ type: 'error', message: (e as Error).message });
-      }
-      controller.close();
-    },
-  });
-
-  return new Response(stream, { headers: { 'Content-Type': 'application/x-ndjson' } });
 }

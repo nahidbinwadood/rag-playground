@@ -1,7 +1,11 @@
 import { promises as fs } from 'fs';
 import path from 'path';
+import os from 'os';
 import { randomUUID } from 'crypto';
-import { pipeline, type FeatureExtractionPipeline } from '@huggingface/transformers';
+import { pipeline, env, type FeatureExtractionPipeline } from '@huggingface/transformers';
+
+// Set cache directory to OS temp directory (/tmp on Vercel/Linux)
+env.cacheDir = path.join(os.tmpdir(), 'transformers-cache');
 
 // ---------- Types ----------
 
@@ -91,8 +95,12 @@ async function load(): Promise<Store> {
 }
 
 async function save(store: Store) {
-  await fs.mkdir(path.dirname(STORE_PATH), { recursive: true });
-  await fs.writeFile(STORE_PATH, JSON.stringify(store));
+  try {
+    await fs.mkdir(path.dirname(STORE_PATH), { recursive: true });
+    await fs.writeFile(STORE_PATH, JSON.stringify(store));
+  } catch (err) {
+    console.warn('Could not persist store to disk (e.g. read-only filesystem):', err);
+  }
 }
 
 export async function listDocs(): Promise<Doc[]> {
