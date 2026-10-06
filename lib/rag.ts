@@ -154,15 +154,21 @@ export async function search(question: string, topK = 4): Promise<Hit[]> {
       'the', 'and', 'for', 'from', 'with', 'have', 'has', 'had', 'you', 'your', 'our', 'are', 'is',
       'was', 'were', 'this', 'that', 'these', 'those', 'not', 'but', 'all', 'any', 'get', 'make',
       'will', 'shall', 'per', 'about', 'into', 'over', 'after', 'before', 'under', 'just', 'than',
+      'do', 'does', 'did', 'done',
     ]);
 
-    const terms = expanded
+    const words = expanded
       .replace(/[^\w\s-]/gu, ' ')
       .split(/\s+/)
-      .filter((w) => w.length > 2 && !STOP.has(w));
+      .filter((w) => w.length > 1 && !STOP.has(w));
 
-    if (!terms.length) {
+    if (!words.length) {
       return store.chunks.slice(0, topK).map((c) => ({ docName: c.docName, text: c.text, score: 0.5 }));
+    }
+
+    const bigrams: string[] = [];
+    for (let i = 0; i < words.length - 1; i++) {
+      bigrams.push(`${words[i]} ${words[i + 1]}`);
     }
 
     const scored = store.chunks
@@ -170,8 +176,17 @@ export async function search(question: string, topK = 4): Promise<Hit[]> {
         const text = c.text.toLowerCase();
         const heading = (c.text.split('\n')[0] || '').toLowerCase();
         let score = 0;
-        for (const t of terms) {
-          const re = new RegExp('\\b' + t.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&') + '\\b', 'i');
+
+        for (const bg of bigrams) {
+          if (heading.includes(bg)) {
+            score += 50;
+          } else if (text.includes(bg)) {
+            score += 15;
+          }
+        }
+
+        for (const w of words) {
+          const re = new RegExp('\\b' + w.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&') + '\\b', 'i');
           if (heading.match(re)) {
             score += 10;
           } else if (text.match(re)) {
