@@ -114,6 +114,24 @@ export async function deleteDoc(id: string) {
 
 // ---------- 4. Retrieval: find the chunks closest in meaning to the question ----------
 
+const BN_TO_EN_MAP: [RegExp, string][] = [
+  [/(পার্সেল|কুরিয়ার)/i, 'parcel courier package send delivery booking item items restriction weight size'],
+  [/(কী\s*কী\s*লাগে|প্রয়োজন|ডকুমেন্ট|কাগজপত্র|নিয়ম|নিয়ম)/i, 'requirements items prohibited restriction weight size information rules'],
+  [/(রাইড|গাড়ি|বাইক|ড্রাইভার|চালক)/i, 'ride car bike driver trip'],
+  [/(ফেলে|হারিয়ে|রেখে|হারিয়ে)/i, 'left lost item forgot belongings support hotline helpline contact'],
+  [/(খাবার|ফুড|রেস্তোরাঁ|রেস্টুরেন্ট)/i, 'food meal restaurant order delivery wrong mistake'],
+  [/(পে\s*লেটার|লেট\s*ফি|বিলম্ব)/i, 'pay later paylater late fee grace period penalty due overdue subscribe'],
+  [/(দেরি|দেরিতে)/i, 'late delay overdue grace period'],
+  [/(ফি|চার্জ|খরচ|ভাড়া)/i, 'fee charge fare cost penalty rate'],
+  [/(টাকা|পেমেন্ট|পরিশোধ)/i, 'money payment pay dues cash'],
+  [/(রিফান্ড|ফেরত)/i, 'refund overcharged return money back compensation claim'],
+  [/(সমস্যা|অভিযোগ|নালিশ|ভুল)/i, 'issue problem complaint report error cancel cancelled wrong mistake'],
+  [/(মার্চেন্ট|দোকান|ব্যবসা)/i, 'merchant business store shop partner panel onboarding'],
+  [/(যোগ|যুক্ত|রেজিস্টার|রেজিস্ট্রেশন|অ্যাকাউন্ট)/i, 'register signup registration onboarding create account new merchant'],
+  [/(টপ\s*আপ|টপআপ|রিচার্জ)/i, 'top-up top up recharge balance bkash'],
+  [/(হেল্পলাইন|যোগাযোগ|ফোন|নাম্বার|কল)/i, 'hotline helpline support contact phone email customer care'],
+];
+
 export async function search(question: string, topK = 4): Promise<Hit[]> {
   const store = await load();
   if (!store.chunks.length) return [];
@@ -123,29 +141,51 @@ export async function search(question: string, topK = 4): Promise<Hit[]> {
       .map((c) => ({ docName: c.docName, text: c.text, score: cosine(q, c.embedding) }))
       .sort((a, b) => b.score - a.score)
       .slice(0, topK);
-  } catch (err) {
-    console.warn('Neural embedding search failed, falling back to lexical search:', err);
-    const terms = question
-      .toLowerCase()
-      .replace(/[^\p{L}\p{N}\s]/gu, ' ')
-      .split(/\s+/)
-      .filter((t) => t.length > 1);
+  } catch {
+    // Neural embedding unavailable (e.g. serverless without native ONNX runtime).
+    // Use bilingual query expansion + heading-weighted lexical search.
+    let expanded = question.toLowerCase();
+    for (const [rx, en] of BN_TO_EN_MAP) {
+      if (rx.test(expanded)) expanded += ' ' + en;
+    }
 
-    if (!terms.length) return store.chunks.slice(0, topK).map((c) => ({ docName: c.docName, text: c.text, score: 0.5 }));
+    const STOP = new Set([
+      'how', 'what', 'where', 'when', 'who', 'why', 'which', 'can', 'could', 'would', 'should',
+      'the', 'and', 'for', 'from', 'with', 'have', 'has', 'had', 'you', 'your', 'our', 'are', 'is',
+      'was', 'were', 'this', 'that', 'these', 'those', 'not', 'but', 'all', 'any', 'get', 'make',
+      'will', 'shall', 'per', 'about', 'into', 'over', 'after', 'before', 'under', 'just', 'than',
+    ]);
+
+    const terms = expanded
+      .replace(/[^\w\s-]/gu, ' ')
+      .split(/\s+/)
+      .filter((w) => w.length > 2 && !STOP.has(w));
+
+    if (!terms.length) {
+      return store.chunks.slice(0, topK).map((c) => ({ docName: c.docName, text: c.text, score: 0.5 }));
+    }
 
     const scored = store.chunks
       .map((c) => {
-        const text = (c.docName + ' ' + c.text).toLowerCase();
-        let matches = 0;
-        for (const term of terms) {
-          if (text.includes(term)) matches += 1;
+        const text = c.text.toLowerCase();
+        const heading = (c.text.split('\n')[0] || '').toLowerCase();
+        let score = 0;
+        for (const t of terms) {
+          const re = new RegExp('\\b' + t.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&') + '\\b', 'i');
+          if (heading.match(re)) {
+            score += 10;
+          } else if (text.match(re)) {
+            score += 2;
+          }
         }
-        return { docName: c.docName, text: c.text, score: matches / terms.length };
+        return { docName: c.docName, text: c.text, score };
       })
       .filter((c) => c.score > 0)
       .sort((a, b) => b.score - a.score)
       .slice(0, topK);
 
-    return scored.length ? scored : store.chunks.slice(0, topK).map((c) => ({ docName: c.docName, text: c.text, score: 0.1 }));
+    return scored.length
+      ? scored
+      : store.chunks.slice(0, topK).map((c) => ({ docName: c.docName, text: c.text, score: 0.1 }));
   }
 }
