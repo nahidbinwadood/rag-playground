@@ -1,11 +1,6 @@
 import { promises as fs } from 'fs';
 import path from 'path';
-import os from 'os';
 import { randomUUID } from 'crypto';
-import { pipeline, env, type FeatureExtractionPipeline } from '@huggingface/transformers';
-
-// Set cache directory to OS temp directory (/tmp on Vercel/Linux)
-env.cacheDir = path.join(os.tmpdir(), 'transformers-cache');
 
 // ---------- Types ----------
 
@@ -51,25 +46,11 @@ export function chunkText(text: string, maxChars = 800): string[] {
 
 // ---------- 2. Embeddings: text -> vector, runs locally, free ----------
 
-// multilingual-e5-small: 384 numbers per text, understands Bangla + English.
-// Downloaded once (~120 MB) into the HF cache on first use.
-// e5 models expect "query: " for questions and "passage: " for documents.
-const EMBED_MODEL = 'Xenova/multilingual-e5-small';
-
-const g = globalThis as unknown as { __embedder?: Promise<FeatureExtractionPipeline>; __store?: Store };
-
-function embedder() {
-  g.__embedder ??= pipeline('feature-extraction', EMBED_MODEL, { dtype: 'q8' });
-  return g.__embedder;
-}
+const g = globalThis as unknown as { __store?: Store };
 
 export async function embed(texts: string[], kind: 'query' | 'passage'): Promise<number[][]> {
-  const extract = await embedder();
-  const out = await extract(
-    texts.map((t) => `${kind}: ${t}`),
-    { pooling: 'mean', normalize: true },
-  );
-  return out.tolist() as number[][];
+  const { embed: runEmbed } = await import('./embed');
+  return runEmbed(texts, kind);
 }
 
 // Vectors are normalized, so cosine similarity is just the dot product. 1 = same meaning, ~0 = unrelated.
@@ -136,9 +117,35 @@ export async function deleteDoc(id: string) {
 export async function search(question: string, topK = 4): Promise<Hit[]> {
   const store = await load();
   if (!store.chunks.length) return [];
-  const [q] = await embed([question], 'query');
-  return store.chunks
-    .map((c) => ({ docName: c.docName, text: c.text, score: cosine(q, c.embedding) }))
-    .sort((a, b) => b.score - a.score)
-    .slice(0, topK);
+  try {
+    const [q] = await embed([question], 'query');
+    return store.chunks
+      .map((c) => ({ docName: c.docName, text: c.text, score: cosine(q, c.embedding) }))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, topK);
+  } catch (err) {
+    console.warn('Neural embedding search failed, falling back to lexical search:', err);
+    const terms = question
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+      .split(/\s+/)
+      .filter((t) => t.length > 1);
+
+    if (!terms.length) return store.chunks.slice(0, topK).map((c) => ({ docName: c.docName, text: c.text, score: 0.5 }));
+
+    const scored = store.chunks
+      .map((c) => {
+        const text = (c.docName + ' ' + c.text).toLowerCase();
+        let matches = 0;
+        for (const term of terms) {
+          if (text.includes(term)) matches += 1;
+        }
+        return { docName: c.docName, text: c.text, score: matches / terms.length };
+      })
+      .filter((c) => c.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, topK);
+
+    return scored.length ? scored : store.chunks.slice(0, topK).map((c) => ({ docName: c.docName, text: c.text, score: 0.1 }));
+  }
 }
