@@ -1,26 +1,182 @@
-@import "tailwindcss";
+@import 'tailwindcss';
 
+/* Support chat theme: fresh green on warm rice-paper white. */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --bg: #f6f4ee;
+  --surface: #ffffff;
+  --line: #e4e1d8;
+  --ink: #1c2321;
+  --muted: #66706b;
+  --brand: #1e7a4c;
+  --brand-soft: #e6f2ea;
+  --brand-deep: #134e32;
+  --cream: #f3ecd8;
+  --accent: #f2b33d;
+  --danger: #c2412d;
+  color-scheme: light;
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-line: var(--line);
+  --color-ink: var(--ink);
+  --color-muted: var(--muted);
+  --color-brand: var(--brand);
+  --color-brand-soft: var(--brand-soft);
+  --color-brand-deep: var(--brand-deep);
+  --color-cream: var(--cream);
+  --color-accent: var(--accent);
+  --color-danger: var(--danger);
+  --font-sans: var(--font-hind), sans-serif;
+  --font-display: var(--font-hind), sans-serif;
+  --font-mono: var(--font-plex-mono), monospace;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-hind), sans-serif;
+}
+
+/* In the base layer so utilities like focus-visible:outline-none can override it. */
+@layer base {
+  :focus-visible {
+    outline: 2px solid var(--brand);
+    outline-offset: 2px;
+  }
+}
+
+/* Market-stall awning under the header: green/cream stripes with a scalloped edge. */
+.awning {
+  height: 12px;
+  background: repeating-linear-gradient(90deg, var(--brand-deep) 0 24px, var(--cream) 24px 48px);
+  -webkit-mask: radial-gradient(12px at 50% 0, #000 97%, #0000) 0 0 / 24px 12px repeat-x;
+  mask: radial-gradient(12px at 50% 0, #000 97%, #0000) 0 0 / 24px 12px repeat-x;
+}
+
+::selection {
+  background: rgb(30 122 76 / 0.18);
+}
+
+/* Messages and panels pop into place. --d staggers a group. */
+@keyframes pop {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.97);
+  }
+}
+.pop {
+  animation: pop 380ms cubic-bezier(0.2, 0.9, 0.3, 1.2) both;
+  animation-delay: var(--d, 0ms);
+}
+
+/* Older pages still use .rise; keep it as a calmer version of pop. */
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+}
+.rise {
+  animation: rise 520ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  animation-delay: var(--d, 0ms);
+}
+
+/* Typing indicator: three dots taking turns. */
+@keyframes bounce-dot {
+  0%,
+  60%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.4;
+  }
+  30% {
+    transform: translateY(-4px);
+    opacity: 1;
+  }
+}
+.typing span {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--muted);
+  animation: bounce-dot 1.1s infinite;
+}
+.typing span:nth-child(2) {
+  animation-delay: 0.15s;
+}
+.typing span:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+/* Source relevance bars grow in. */
+@keyframes trace-in {
+  from {
+    transform: scaleX(0);
+  }
+}
+.trace-bar {
+  transform-origin: left;
+  animation: trace-in 600ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+/* Blinking caret while the answer is still being written. */
+@keyframes blink {
+  50% {
+    opacity: 0;
+  }
+}
+.caret::after {
+  content: '▍';
+  margin-left: 2px;
+  color: var(--brand);
+  animation: blink 1s steps(1) infinite;
+}
+
+/* Test panel slides in from the right. */
+@keyframes slide-in {
+  from {
+    transform: translateX(100%);
+  }
+}
+.slide-in {
+  animation: slide-in 320ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+.fade-in {
+  animation: fade-in 200ms ease-out;
+}
+
+/* A just-added document flashes once. */
+@keyframes flash {
+  from {
+    background: rgb(30 122 76 / 0.16);
+  }
+}
+.flash {
+  animation: flash 1.6s ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pop,
+  .rise,
+  .typing span,
+  .trace-bar,
+  .caret::after,
+  .slide-in,
+  .fade-in,
+  .flash {
+    animation: none;
+  }
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line) transparent;
 }

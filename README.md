@@ -1,36 +1,65 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# RAG Playground — Pathao help center chat (unofficial demo)
 
-## Getting Started
+A learning project: a customer-support chatbot that answers from a business's own help center (RAG), in one Next.js app.
+The knowledge base is the public help center of **Pathao** (rides, food, parcel, Pay Later, merchants), copied from help.pathao.com into `data/pathao/*.md` with `node scripts/fetch-pathao.mjs data/pathao`. Personal learning use only: this is not Pathao's official support, and the content belongs to Pathao.
 
-First, run the development server:
+- **Embeddings**: run locally and free with `@huggingface/transformers` (`multilingual-e5-small`, Bangla + English).
+- **Vector store**: `data/store.json`, brute-force cosine search.
+- **LLM**: free models on OpenRouter, with a fallback list.
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+## Setup
+
+1. Put your OpenRouter key in `.env.local`:
+   ```
+   OPENROUTER_API_KEY=sk-or-v1-...
+   ```
+2. `pnpm install`
+3. `pnpm dev` → http://localhost:3000
+4. If the Test panel shows no documents, run `pnpm ingest data/pathao` (with the dev server running).
+
+The first document you add downloads the embedding model (~120 MB, once). `/learn` explains every part for JavaScript beginners.
+
+## How the assistant replies
+
+| Customer writes | Assistant does |
+|---|---|
+| "hi", "thanks" | Short warm reply, offers help |
+| A question the help center answers | Answers only from it, cites `[1]` `[2]` |
+| A business question the help center does not answer | Says it doesn't know, gives helpline / email |
+| Something unrelated ("capital of Japan?", "write code") | Politely refuses, says it only helps with Pathao |
+
+The rules live in `systemPrompt()` in `app/api/chat/route.ts`. The contact section is always attached to the sources so the "don't know" reply can point somewhere.
+
+## How it works
+
+```
+Add document:  text → chunkText() → embed('document name: chunk') → data/store.json
+Ask question:  last question (top K) + last two joined (2 more) → embed → chunks + contact chunk → system prompt → LLM → streamed answer
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+| File | What it does |
+|---|---|
+| `lib/rag.ts` | Chunking, embeddings, vector store, search: the whole RAG core |
+| `app/api/docs/route.ts` | List / add documents |
+| `app/api/chat/route.ts` | Retrieve, build the prompt, stream from OpenRouter (NDJSON) |
+| `app/page.tsx` | Support chat + Test panel (knowledge base, settings) |
+| `app/learn/page.tsx` | Beginner guide to every feature |
+| `scripts/check.mts` | `pnpm check`: asserts chunking and embedding similarity work |
+| `scripts/ingest.mts` | `pnpm ingest <folder>`: bulk-load .md/.txt through the running app |
+| `scripts/fetch-pathao.mjs` | One-off: download help.pathao.com articles into `data/pathao/*.md` |
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Questions to test
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+- Pay Later: "What is the Pay Later late fee?" then "how long is the grace period?"
+- Top-up: "How do I top up my Pathao account?" / "মোবাইল রিচার্জ কীভাবে করব?"
+- Parcel: "What items can't I send by parcel?"
+- Merchants: "Do I need a Facebook page to become a merchant?"
+- Not in the help center: "I left my phone in a ride, what do I do?" → should give the helpline, not invent.
+- Off-topic: "What is the capital of Japan?" → polite refusal, no answer.
+- Turn "Use help center" off in the Test panel and ask a delivery question: the model has no idea.
 
-## Learn More
+## Limits (deliberate)
 
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- Free OpenRouter models: about 50 requests/day, sometimes rate-limited (429).
+- No chunk overlap, no hybrid keyword search; follow-ups add 2 chunks from the last two questions joined, not a rewritten query.
+- JSON store is fine to ~10k chunks; beyond that use Postgres + pgvector.
